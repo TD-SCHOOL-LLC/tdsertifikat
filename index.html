@@ -627,6 +627,8 @@ function base64ToBlob(b64, mime){
 async function downloadCertificate(student){
   const filename = student.name.replace(/\s+/g,'_') + '_sertifikat.pdf';
 
+  // GitHub-backed students store the PDF as a filename (e.g. student_abc.pdf),
+  // while older/local records may store the PDF itself as Base64.
   if (student.file && !student.pdf) {
     try {
       const url = fileUrl(student.file);
@@ -642,26 +644,74 @@ async function downloadCertificate(student){
     return;
   }
 
-  let ok = false;
-  if (downloadsNs) {
-    try {
-      await downloadsNs.save({ filename, data: base64ToBlob(student.pdf,'application/pdf') });
-      ok = true;
-    } catch(err) {
-      console.warn('downloads.save failed', err);
-      if (err && err.code === 'declined') return;
-    }
+  if (!student.pdf) {
+    toast('PDF faylı tapılmadı.', true);
+    return;
   }
-  if (!ok) {
+
+  // GitHub-backed records keep only the PDF filename. Fetch that file from
+  // the same GitHub Pages directory instead of treating the filename as Base64.
+  if (!/^data:application\/pdf;base64,/i.test(student.pdf)) {
     try {
-      const url = URL.createObjectURL(base64ToBlob(student.pdf,'application/pdf'));
+      const url = fileUrl(student.pdf);
+      const r = await fetch(url, {cache:'no-store'});
+      if (!r.ok) {
+        toast('PDF faylı tapılmadı (' + r.status + ')', true);
+        return;
+      }
+      const blob = await r.blob();
+      const pdfBlob = new Blob([blob], {type:'application/pdf'});
+
+      if (downloadsNs) {
+        try {
+          await downloadsNs.save({ filename, data: pdfBlob });
+          celebrateDownload();
+          return;
+        } catch(err) {
+          console.warn('downloads.save failed', err);
+          if (err && err.code === 'declined') return;
+        }
+      }
+
+      const urlObj = URL.createObjectURL(pdfBlob);
       const a = document.createElement('a');
-      a.href = url; a.download = filename;
+      a.href = urlObj; a.download = filename;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      setTimeout(()=>URL.revokeObjectURL(url), 60000);
-    } catch(err) { toast('Sertifikatı yükləmək mümkün olmadı.', true); return; }
+      setTimeout(()=>URL.revokeObjectURL(urlObj), 60000);
+      celebrateDownload();
+    } catch(err) {
+      console.error(err);
+      toast('PDF-i yükləmək mümkün olmadı.', true);
+    }
+    return;
   }
-  celebrateDownload();
+
+  // Backward compatibility for records that really contain Base64 PDF data.
+  try {
+    const pdfData = student.pdf.replace(/^data:application\/pdf;base64,/i, '');
+    const pdfBlob = base64ToBlob(pdfData, 'application/pdf');
+
+    if (downloadsNs) {
+      try {
+        await downloadsNs.save({ filename, data: pdfBlob });
+        celebrateDownload();
+        return;
+      } catch(err) {
+        console.warn('downloads.save failed', err);
+        if (err && err.code === 'declined') return;
+      }
+    }
+
+    const url = URL.createObjectURL(pdfBlob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 60000);
+    celebrateDownload();
+  } catch(err) {
+    console.error(err);
+    toast('Sertifikatı yükləmək mümkün olmadı.', true);
+  }
 }
 
 /* ---------- admin ---------- */
